@@ -27,17 +27,41 @@ def analyze_property_url(url):
             if script and script.string:
                 try:
                     data = json.loads(script.string)
-                    listing = data.get("props", {}).get("pageProps", {}).get("listing") or \
-                              data.get("props", {}).get("pageProps", {}).get("initialListing", {})
+                    page = data.get("props", {}).get("pageProps", {})
+                    listing = (
+                        page.get("listing")
+                        or page.get("initialListing")
+                        or page.get("propertyResult", {}).get("property")
+                    )
                     if listing:
+                        price = listing.get("price")
+                        if isinstance(price, dict):
+                            price = int(re.sub(r"[^\d]", "", str(price.get("value", 0))))
+                        else:
+                            price = int(price or 0)
+
+                        size = listing.get("size")
+                        if isinstance(size, dict):
+                            size = int(size.get("value", 0))
+
+                        developer = (
+                            listing.get("developerName")
+                            or listing.get("project", {}).get("developer", {}).get("name")
+                        )
+
+                        area_name = None
+                        location = listing.get("location")
+                        if isinstance(location, dict):
+                            area_name = location.get("full_name")
+
                         return {
                             "url": url,
                             "title": listing.get("title", "N/A"),
-                            "price": int(listing.get("price") or 0),
-                            "area": listing.get("communityName", "Unknown"),
-                            "size": listing.get("size") or 0,
+                            "price": price,
+                            "area": area_name or listing.get("communityName", "Unknown"),
+                            "size": size or 0,
                             "bedrooms": listing.get("bedrooms") or 0,
-                            "developer": listing.get("developerName", "Unknown"),
+                            "developer": developer or "Unknown",
                         }
                 except Exception:
                     pass
@@ -76,15 +100,39 @@ def analyze_property_url(url):
         return None
 
 def get_comparables(subject):
+    url = subject.get("url", "")
+    listings = []
+
+    if "propertyfinder.ae" in urlparse(url).netloc:
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=10)
+            if response.status_code < 400:
+                soup = BeautifulSoup(response.text, "html.parser")
+                script = soup.find("script", id="__NEXT_DATA__", type="application/json")
+                if script and script.string:
+                    data = json.loads(script.string)
+                    prop = data.get("props", {}).get("pageProps", {}).get("propertyResult", {}).get("property")
+                    comparables = prop.get("similar_price_transactions", {}).get("rent", [])
+                    for comp in comparables[:5]:
+                        price = int(re.sub(r"[^\d]", "", str(comp.get("amount", "0"))))
+                        size = int(comp.get("size") or 0)
+                        if price and size:
+                            listings.append({"price": price, "size": size})
+            if listings:
+                return listings
+        except Exception:
+            pass
+
     area = subject.get("area", "Dubai Marina").replace(" ", "-").lower()
     bedrooms = subject.get("bedrooms", 2)
-    search_url = f"https://www.propertyfinder.ae/en/search?c=2&l=0&ob=mr&rp=y&fu=0&pt=101&bedrooms={bedrooms}&t=rent&kw={area}"
+    search_url = (
+        f"https://www.propertyfinder.ae/en/search?c=2&l=0&ob=mr&rp=y&fu=0&pt=101&bedrooms={bedrooms}&t=rent&kw={area}"
+    )
     try:
         response = requests.get(search_url, headers=HEADERS, timeout=10)
         if response.status_code >= 400:
             return []
         soup = BeautifulSoup(response.text, "html.parser")
-        listings = []
 
         script = soup.find("script", id="__NEXT_DATA__", type="application/json")
         if script and script.string:
@@ -110,5 +158,5 @@ def get_comparables(subject):
                     listings.append({"price": price, "size": size})
 
         return listings
-    except Exception as e:
+    except Exception:
         return []
